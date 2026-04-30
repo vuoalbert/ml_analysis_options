@@ -29,8 +29,8 @@ from research.option_simulator import OptionsSimConfig, make_options_simulator
 from research.multi_walker import walk_multi
 
 
-WINDOW = ("March 2026", "2026-03-01", "2026-03-31")
-STOCK_BENCHMARK = None     # not specifically known for March; we'll just compare across multi-N
+WINDOW = ("Today (Apr 30 2026)", "2026-04-30", "2026-05-01")
+STOCK_BENCHMARK = None     # single day; just compare across multi-N
 
 
 def summarise(trades):

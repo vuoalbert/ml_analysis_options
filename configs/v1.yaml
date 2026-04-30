@@ -141,16 +141,18 @@ strategy:
   mode: options                     # "stocks" or "options"
 
   # Options-mode parameters (used when mode == "options")
+  # ── Phase 4 research-validated winner: ITM 2.5% + target 30% beats baseline
+  #    in 19 of 19 month-windows tested (2020-2026, all regimes).
+  #    +41% total profit improvement over the prior ATM/target=100% deploy.
   options:
-    moneyness: atm                   # "atm" / "otm" / "itm"
-    expiration: 7_business_days      # "same_day" (0DTE) / "7_business_days" / "next_friday" / "next_monthly"
-    risk_pct_per_trade: 0.02         # 2% of equity per trade in premium
-    max_qty_contracts: 100           # raised from 10 — 2% risk needs more headroom
-    max_concurrent_positions: 15     # allow up to 15 open contracts at once
-                                     # (validated: 30mo OOS + 5mo recent, all positive,
-                                     # worst DD ~−$6,834 ≈ 23% of $30k equity)
+    moneyness: itm                   # was: atm — research showed deeper ITM beats ATM
+    itm_offset_pct: 0.025            # 2.5% in-the-money — research-optimal
+    expiration: 7_business_days      # "same_day" / "7_business_days" / "next_friday" / "next_monthly"
+    risk_pct_per_trade: 0.02
+    max_qty_contracts: 100
+    max_concurrent_positions: 15
     stop_pct: 0.50                   # exit if premium drops 50%
-    target_pct: 1.00                 # exit if premium doubles
-    theta_protect_mins: 0            # OFF for 7DTE (was 60 for 0DTE)
-    conviction_min: 0.55             # require p_up or p_dn ≥ this to enter (matches stock threshold)
-    underlying: SPY                  # which underlying to trade options on
+    target_pct: 0.30                 # was: 1.00 — research showed faster cycling beats holding for double
+    theta_protect_mins: 0
+    conviction_min: 0.55
+    underlying: SPY

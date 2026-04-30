@@ -566,6 +566,7 @@ class LiveTrader:
         opt_cfg = self.cfg.get("strategy", {}).get("options", {})
         underlying = opt_cfg.get("underlying", "SPY")
         moneyness = opt_cfg.get("moneyness", "atm")
+        itm_offset_pct = float(opt_cfg.get("itm_offset_pct", 0.005))
         max_qty = int(opt_cfg.get("max_qty_contracts", 10))
         risk_pct = float(opt_cfg.get("risk_pct_per_trade", 0.01))
         expiration_spec = opt_cfg.get("expiration", "same_day")
@@ -591,6 +592,7 @@ class LiveTrader:
         contract = pick_contract(
             trading=self.trading, underlying=underlying, side=side,
             last_price=last_price, expiration=expiration_date, moneyness=moneyness,
+            itm_offset_pct=itm_offset_pct,
         )
         if contract is None:
             log.warning("options: no contract found for %s %s near %s exp=%s",
