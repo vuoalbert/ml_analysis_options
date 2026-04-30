@@ -93,6 +93,17 @@ def current_position(symbol: str) -> dict | None:
     return None
 
 
+def all_positions() -> list:
+    """Return raw position objects (Alpaca SDK) for all open positions.
+
+    Used by the dashboard to count concurrent option contracts in options-mode.
+    """
+    try:
+        return list(trading_client().get_all_positions())
+    except Exception:
+        return []
+
+
 # ---- orders / fills ----
 
 def recent_fills(lookback_hours: int = 8, symbol: str | None = None) -> pd.DataFrame:

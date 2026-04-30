@@ -23,7 +23,8 @@ from ui import state
 
 
 st.set_page_config(
-    page_title="SPY — ML Paper Trader",
+    page_title="SPY OPTIONS — 7DTE multi=15 — ML Paper Trader",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
     menu_items={"About": None, "Get help": None, "Report a bug": None},
@@ -235,6 +236,53 @@ timeframe = st.session_state.get("timeframe", "1m")
 _opts, _default = WINDOW_OPTIONS[timeframe]
 hours = st.session_state.get("hours", _default)
 
+# ---------- Strategy banner (identifies this as the OPTIONS bot) ----------
+# Read strategy config so the banner reflects the actual deployed config.
+try:
+    from utils.config import load as _load_cfg
+    _cfg = _load_cfg("v1")
+    _mode = _cfg.get("strategy", {}).get("mode", "stocks")
+    _opt_cfg = _cfg.get("strategy", {}).get("options", {})
+    _exp = _opt_cfg.get("expiration", "same_day")
+    _conv = _opt_cfg.get("conviction_min", 0.55)
+    _max_conc = _opt_cfg.get("max_concurrent_positions", 1)
+    _moneyness = _opt_cfg.get("moneyness", "atm").upper()
+    _risk_pct = _opt_cfg.get("risk_pct_per_trade", 0.01)
+except Exception:
+    _mode = "stocks"
+    _exp, _conv, _max_conc, _moneyness, _risk_pct = "—", 0, 0, "—", 0
+
+# Banner: orange accent if options-mode, blue if stocks-mode (visually distinct
+# from the stocks-bot dashboard at a glance).
+_banner_bg = "#1a0f02" if _mode == "options" else "#0a1525"
+_banner_border = "#f97316" if _mode == "options" else "#3b82f6"
+_banner_label = "📈 OPTIONS BOT" if _mode == "options" else "📊 STOCKS BOT"
+_banner_pillbg = "#f97316" if _mode == "options" else "#3b82f6"
+if _mode == "options":
+    _banner_subtitle = (
+        f"{_exp.replace('_', ' ')} · {_moneyness} · "
+        f"p≥{_conv:.2f} · risk {_risk_pct*100:.1f}% · max concurrent {_max_conc}"
+    )
+else:
+    _banner_subtitle = "stocks-mode (legacy path)"
+
+st.markdown(
+    f'<div style="display:flex;align-items:center;justify-content:space-between;'
+    f'background:{_banner_bg};border:1px solid {_banner_border};border-radius:6px;'
+    f'padding:0.55rem 1rem;margin-bottom:0.5rem;">'
+    f'<div style="display:flex;align-items:center;gap:0.7rem;">'
+    f'  <span style="background:{_banner_pillbg};color:white;font-weight:700;'
+    f'        font-size:0.72rem;letter-spacing:0.08em;padding:0.18rem 0.55rem;'
+    f'        border-radius:3px;">{_banner_label}</span>'
+    f'  <span style="color:#e5e7eb;font-weight:600;font-size:0.9rem;'
+    f'        font-family:\"SF Mono\",monospace;">{_banner_subtitle}</span>'
+    f'</div>'
+    f'<div style="color:#9ca3af;font-size:0.72rem;font-family:\"SF Mono\",monospace;">'
+    f'{symbol} · v3_mtf · paper</div>'
+    f'</div>',
+    unsafe_allow_html=True,
+)
+
 # ---------- Header KPIs ----------
 acct = d.account_info()
 hb = state.read_heartbeat()
@@ -289,26 +337,51 @@ elif hb and hb.get("in_window"):
 else:
     status_text, status_color, status_dot = "IDLE", "#6b7280", "gray"
 
-# Position state
-if pos:
-    p_qty = int(pos["qty"])
-    p_side = "LONG" if p_qty > 0 else "SHORT"
-    p_color = "#26a69a" if p_qty > 0 else "#ef5350"
-    p_pnl_pct = pos["unrealized_plpc"] * 100
-    pnl_dollars_pos = float(pos.get("unrealized_pl", 0))
-    pos_main = f"{p_side} {abs(p_qty)}"
-    pos_sub = f"@${float(pos['avg_entry_price']):,.2f}  ·  P&L ${pnl_dollars_pos:+,.0f} ({p_pnl_pct:+.2f}%)"
-    pos_color = "#26a69a" if pnl_dollars_pos >= 0 else "#ef5350"
-elif ot.get("qty"):
-    p_qty = int(ot["qty"])
-    p_side = "LONG" if p_qty > 0 else "SHORT"
-    pos_main = f"{p_side} {abs(p_qty)} (loop)"
-    pos_sub = f"@${float(ot.get('entry_price', 0)):,.2f}"
-    pos_color = "#fbbf24"
+# Position state — for options-mode, surface concurrent count
+if _mode == "options":
+    # Count actual broker option positions (rough — Alpaca doesn't expose 'is_option')
+    # by checking for OCC-style symbols in get_all_positions.
+    try:
+        all_pos = d.all_positions() if hasattr(d, "all_positions") else []
+    except Exception:
+        all_pos = []
+    n_open = sum(1 for p in all_pos if isinstance(getattr(p, "symbol", None), str)
+                 and len(p.symbol) >= 15 and p.symbol[:3] == "SPY")
+    if n_open > 0:
+        pos_main = f"{n_open}/{_max_conc} OPTIONS"
+        pos_sub = f"max concurrent {_max_conc}"
+        pos_color = "#f97316"
+    elif ot.get("qty"):
+        p_qty = int(ot["qty"])
+        p_side = "CALL" if p_qty > 0 else "PUT"
+        pos_main = f"{p_side} {abs(p_qty)}"
+        pos_sub = f"@${float(ot.get('entry_price', 0)):,.2f} prem"
+        pos_color = "#fbbf24"
+    else:
+        pos_main = "FLAT"
+        pos_sub = f"0/{_max_conc} concurrent"
+        pos_color = "#6b7280"
 else:
-    pos_main = "FLAT"
-    pos_sub = "—"
-    pos_color = "#6b7280"
+    # Stocks-mode (legacy)
+    if pos:
+        p_qty = int(pos["qty"])
+        p_side = "LONG" if p_qty > 0 else "SHORT"
+        p_color = "#26a69a" if p_qty > 0 else "#ef5350"
+        p_pnl_pct = pos["unrealized_plpc"] * 100
+        pnl_dollars_pos = float(pos.get("unrealized_pl", 0))
+        pos_main = f"{p_side} {abs(p_qty)}"
+        pos_sub = f"@${float(pos['avg_entry_price']):,.2f}  ·  P&L ${pnl_dollars_pos:+,.0f} ({p_pnl_pct:+.2f}%)"
+        pos_color = "#26a69a" if pnl_dollars_pos >= 0 else "#ef5350"
+    elif ot.get("qty"):
+        p_qty = int(ot["qty"])
+        p_side = "LONG" if p_qty > 0 else "SHORT"
+        pos_main = f"{p_side} {abs(p_qty)} (loop)"
+        pos_sub = f"@${float(ot.get('entry_price', 0)):,.2f}"
+        pos_color = "#fbbf24"
+    else:
+        pos_main = "FLAT"
+        pos_sub = "—"
+        pos_color = "#6b7280"
 
 # Day P&L color
 pnl_color = "#26a69a" if day_pnl >= 0 else "#ef5350"
@@ -366,7 +439,8 @@ header = (
     + _cell(
         "Status",
         f'<span style="color:{status_color};">{status_text}</span>',
-        sub=f"thr {float(art.thresholds['up']):.2f} / {float(art.thresholds['down']):.2f}",
+        sub=(f'7DTE · p≥{_conv:.2f} · max {_max_conc}' if _mode == "options"
+             else f"thr {float(art.thresholds['up']):.2f} / {float(art.thresholds['down']):.2f}"),
     )
     + '</div>'
 )
