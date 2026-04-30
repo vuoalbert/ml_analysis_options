@@ -1,0 +1,24 @@
+.env
+.venv/
+logs/
+__pycache__/
+target/
+.claude/
+logs_streamlit.log
+
+# runtime state / large data
+cache/
+halt.flag
+.DS_Store
+*.pyc
+
+# trained models — keep meta.json for reproducibility, drop the binary blobs
+# artifacts/*/model.lgb
+
+# live trading journal output (private to each user's deployment)
+reports/predictions.csv
+reports/trades.csv
+reports/trade_shap.csv
+reports/daily/
+reports/summary.json
+reports/summary.md

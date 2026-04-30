@@ -1,0 +1,197 @@
+{
+  "feature_cols": [
+    "bb_pctb_20",
+    "dow_0",
+    "dow_1",
+    "dow_2",
+    "dow_3",
+    "dow_4",
+    "es_chg_1d",
+    "es_level",
+    "evt_fomc_day",
+    "evt_zero_dte",
+    "fred_BAMLH0A0HYM2",
+    "fred_BAMLH0A0HYM2_chg20d",
+    "fred_DFII10",
+    "fred_DFII10_chg20d",
+    "fred_T10Y2Y",
+    "fred_T10Y2Y_chg20d",
+    "lunch_lull",
+    "ma_diff_60_240",
+    "macd",
+    "macd_hist",
+    "macd_sig",
+    "or_pos",
+    "or_width_pct",
+    "overnight_gap",
+    "ret_1",
+    "ret_10",
+    "ret_2",
+    "ret_3",
+    "ret_30",
+    "ret_5",
+    "ret_ac_60",
+    "rsi_14",
+    "rvol_15",
+    "rvol_5",
+    "rvol_60",
+    "rvol_60_pct20d",
+    "sector_breadth_5",
+    "session_cos",
+    "session_min",
+    "session_sin",
+    "signed_vol_proxy",
+    "signed_vol_proxy_z",
+    "tlt_ret_5",
+    "trend_strength_30",
+    "uup_ret_5",
+    "vix_chg_1d",
+    "vix_level",
+    "vol_z_mod",
+    "vwap_dev",
+    "vwap_dev_roll_30",
+    "xlb_ret_5",
+    "xlc_ret_5",
+    "xle_ret_5",
+    "xlf_ret_5",
+    "xli_ret_5",
+    "xlk_ret_5",
+    "xlp_ret_5",
+    "xlre_ret_5",
+    "xlu_ret_5",
+    "xlv_ret_5",
+    "xly_ret_5",
+    "mtf_ret_60min",
+    "mtf_ret_4h",
+    "mtf_intraday_pct",
+    "mtf_overnight_change",
+    "mtf_5d_return"
+  ],
+  "thresholds": {
+    "up": 0.5700000000000001,
+    "down": 0.55
+  },
+  "cfg": {
+    "run_name": "research_v2_entry",
+    "universe": {
+      "symbol": "SPY",
+      "cross_asset": [
+        "ES=F",
+        "^VIX",
+        "TLT",
+        "UUP",
+        "XLK",
+        "XLF",
+        "XLE",
+        "XLV",
+        "XLY",
+        "XLP",
+        "XLI",
+        "XLU",
+        "XLRE",
+        "XLB",
+        "XLC"
+      ]
+    },
+    "window": {
+      "start": "2023-04-01",
+      "end": "2026-03-31",
+      "holdout_start": "2026-03-01",
+      "rth_only": true,
+      "tz": "America/New_York"
+    },
+    "tuning_frac": 0.1,
+    "label": {
+      "horizon_min": 15,
+      "dead_zone_bp": 2.0
+    },
+    "features": {
+      "return_lags": [
+        1,
+        2,
+        3,
+        5,
+        10,
+        30
+      ],
+      "vol_windows": [
+        5,
+        15,
+        60
+      ],
+      "rsi_window": 14,
+      "macd": [
+        12,
+        26,
+        9
+      ],
+      "bollinger_window": 20,
+      "vwap_window": 30,
+      "vol_zscore_window": 20
+    },
+    "fred_series": [
+      "T10Y2Y",
+      "BAMLH0A0HYM2",
+      "DFII10"
+    ],
+    "splits": {
+      "train_months": 35,
+      "val_months": 1,
+      "test_months": 1
+    },
+    "model": {
+      "kind": "lightgbm",
+      "objective": "multiclass",
+      "num_class": 3,
+      "metric": "multi_logloss",
+      "seed": 42,
+      "early_stopping_rounds": 50,
+      "optuna_trials": 0,
+      "use_class_weights": false
+    },
+    "threshold_tuning": {
+      "threshold_floor": 0.55,
+      "min_trades": 100,
+      "grid_step": 0.02
+    },
+    "costs": {
+      "half_spread_bp": 0.5,
+      "slippage_bp": 0.5,
+      "commission_per_share": 0.0,
+      "fill_policy": "next_bar_open"
+    },
+    "risk": {
+      "vol_scaled_K": 1.5,
+      "vol_scaled_rr": 2.0,
+      "vol_lookback_min": 30,
+      "min_stop_bps": 5.0,
+      "max_stop_bps": 100.0,
+      "max_notional_frac": 2.0,
+      "risk_pct_base": 0.005,
+      "risk_pct_max": 0.01,
+      "conviction_lo": 0.55,
+      "conviction_hi": 0.7,
+      "risk_pct_per_trade": 0.005,
+      "flat_by_minutes_before_close": 5,
+      "skip_first_minutes": 5,
+      "skip_last_minutes": 5,
+      "daily_dd_kill_frac": 0.02
+    },
+    "live": {
+      "paper": true,
+      "poll_seconds": 60,
+      "heartbeat_log_seconds": 300
+    }
+  },
+  "train_window": [
+    "2023-04-11 14:31:00+00:00",
+    "2026-03-30 19:44:00+00:00"
+  ],
+  "metrics": {
+    "tag": "mtf",
+    "add_mtf": true,
+    "add_volume": false,
+    "ensemble": false,
+    "note": "Promoted from research_v3_mtf \u2014 adds 5 multi-timeframe features. Best variant by total profit on 4 of 5 windows incl. 31-month pre-train OOS at Sharpe 1.06."
+  }
+}

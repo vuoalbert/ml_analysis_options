@@ -1,0 +1,37 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    TZ=America/New_York
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        libgomp1 \
+        tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.dashboard.txt requirements.loop.txt ./
+RUN pip install -r requirements.dashboard.txt -r requirements.loop.txt
+
+COPY .streamlit/ .streamlit/
+COPY backtest/   backtest/
+COPY configs/    configs/
+COPY data_pull/  data_pull/
+COPY features/   features/
+COPY labels/     labels/
+COPY live/       live/
+COPY model/      model/
+COPY research/   research/
+COPY ui/         ui/
+COPY utils/      utils/
+COPY artifacts/  artifacts/
+COPY render-entrypoint.sh /render-entrypoint.sh
+RUN chmod +x /render-entrypoint.sh
+
+EXPOSE 8501
+CMD ["/render-entrypoint.sh"]

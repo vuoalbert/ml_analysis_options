@@ -1,0 +1,94 @@
+run_name: cross
+update_latest: false   # sandbox run
+
+universe:
+  # For cross-sectional training, `symbol` becomes a list of targets.
+  # Each gets the same cross-asset feature set.
+  targets:
+    - SPY
+    - QQQ
+    - IWM
+  cross_asset:
+    - ES=F
+    - ^VIX
+    - TLT
+    - UUP
+    - XLK
+    - XLF
+    - XLE
+    - XLV
+    - XLY
+    - XLP
+    - XLI
+    - XLU
+    - XLRE
+    - XLB
+    - XLC
+  # Fallback for code paths that read .symbol directly. Cross-sectional code
+  # uses .targets and ignores this.
+  symbol: SPY
+
+window:
+  start: "2023-04-01"
+  end:   "2026-03-31"
+  holdout_start: "2026-03-01"
+  rth_only: true
+  tz: "America/New_York"
+
+tuning_frac: 0.5
+
+label:
+  horizon_min: 15
+  dead_zone_bp: 2.0   # use SPY-level cost (slightly optimistic for IWM)
+
+features:
+  return_lags: [1, 2, 3, 5, 10, 30]
+  vol_windows: [5, 15, 60]
+  rsi_window: 14
+  macd: [12, 26, 9]
+  bollinger_window: 20
+  vwap_window: 30
+  vol_zscore_window: 20
+
+fred_series:
+  - T10Y2Y
+  - BAMLH0A0HYM2
+  - DFII10
+
+splits:
+  train_months: 6
+  val_months:   1
+  test_months:  1
+
+model:
+  kind: lightgbm
+  objective: multiclass
+  num_class: 3
+  metric: multi_logloss
+  seed: 42
+  early_stopping_rounds: 50
+  optuna_trials: 30
+  use_class_weights: false
+
+threshold_tuning:
+  threshold_floor: 0.55
+  min_trades: 200    # bump because we have 3x the symbols firing per fold
+  grid_step: 0.02
+
+costs:
+  half_spread_bp: 0.7    # blended (SPY 0.5, QQQ 0.5, IWM 1.0)
+  slippage_bp:    0.7
+  commission_per_share: 0.0
+  fill_policy: next_bar_open
+
+risk:
+  max_position_notional_frac: 0.10
+  flat_by_minutes_before_close: 5
+  skip_first_minutes: 5
+  skip_last_minutes: 5
+  daily_dd_kill_frac: 0.02
+
+live:
+  paper: true
+  poll_seconds: 60
+  heartbeat_log_seconds: 300

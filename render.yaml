@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: ml-analysis
+    runtime: docker
+    dockerfilePath: ./Dockerfile.render
+    plan: starter
+    region: oregon
+    healthCheckPath: /_stcore/health
+    autoDeploy: true
+    envVars:
+      - key: TZ
+        value: America/New_York
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: APCA_API_KEY_ID
+        sync: false
+      - key: APCA_API_SECRET_KEY
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+    disk:
+      name: ml-state
+      mountPath: /var/data
+      sizeGB: 5

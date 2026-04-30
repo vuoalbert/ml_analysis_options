@@ -1,0 +1,14 @@
+alpaca-py>=0.43
+pandas>=2.2
+numpy>=1.26
+pyarrow>=15
+python-dotenv>=1.0
+pyyaml>=6
+pandas-market-calendars>=4.4
+lightgbm>=4.3
+yfinance>=0.2.40
+fredapi>=0.5
+shap>=0.45
+streamlit>=1.30
+streamlit-autorefresh>=1.0
+plotly>=5.20

@@ -1,0 +1,34 @@
+FROM python:3.11-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libgomp1 \
+        ca-certificates \
+        tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV TZ=America/New_York
+
+WORKDIR /app
+
+COPY requirements.loop.txt requirements.loop.txt
+RUN pip install -r requirements.loop.txt
+
+COPY backtest/  backtest/
+COPY configs/   configs/
+COPY data_pull/ data_pull/
+COPY features/  features/
+COPY labels/    labels/
+COPY live/      live/
+COPY model/     model/
+COPY research/  research/
+COPY utils/     utils/
+
+RUN mkdir -p logs cache reports artifacts
+
+CMD ["python", "-m", "live.loop", "--config", "v1"]

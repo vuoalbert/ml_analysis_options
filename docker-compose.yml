@@ -1,0 +1,36 @@
+services:
+  loop:
+    build:
+      context: .
+      dockerfile: Dockerfile.loop
+    image: ml_v3-loop:latest
+    container_name: ml_v3-loop
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/New_York
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+      - ./cache:/app/cache
+    command: ["python", "-m", "live.loop", "--config", "v1"]
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: ml_v3-dashboard:latest
+    container_name: ml_v3-dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/New_York
+    ports:
+      - "8503:8501"
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+    depends_on:
+      - loop
