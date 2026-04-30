@@ -26,6 +26,20 @@ ALPACA_CROSS = {"TLT", "UUP", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "
 YF_DAILY_CROSS = {"^VIX": "vix", "ES=F": "es", "DX=F": "dxy"}
 
 
+def _coerce_ns_utc(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Force a DatetimeIndex to datetime64[ns, UTC] precision.
+
+    Mixing precisions (ns / us / ms) across a join forces pandas off the
+    vectorized path and into per-element Python conversion. Always coerce
+    inputs to ns/UTC before joining to keep the fast path.
+    """
+    if idx.dtype == "datetime64[ns, UTC]":
+        return idx
+    if idx.tz is None:
+        return idx.astype("datetime64[ns]").tz_localize("UTC")
+    return idx.astype("datetime64[ns, UTC]")
+
+
 def _align_minute(df: pd.DataFrame, minute_idx: pd.DatetimeIndex, cols: list[str], prefix: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(index=minute_idx, columns=[f"{prefix}_{c}" for c in cols])

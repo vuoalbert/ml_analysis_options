@@ -8,6 +8,7 @@ logs_streamlit.log
 
 # runtime state / large data
 cache/
+cache
 halt.flag
 .DS_Store
 *.pyc

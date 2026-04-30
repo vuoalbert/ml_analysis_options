@@ -90,7 +90,8 @@ class Position:
 
 @dataclass
 class State:
-    position: Position = field(default_factory=Position)
+    position: Position = field(default_factory=Position)              # primary (stocks mode + legacy)
+    option_positions: list[Position] = field(default_factory=list)    # multi-N options mode
     day_start_equity: float | None = None
     day_realized_pnl: float = 0.0
     killed_for_day: bool = False
@@ -307,12 +308,20 @@ class LiveTrader:
                 except Exception as e:
                     log.warning("live yf fetch failed for %s: %s", s, e)
 
-        fred_df = fred.pull_many(self.cfg.get("fred_series", []),
-                                 str((now - pd.Timedelta(days=120)).date()), str(now.date()))
-        if not fred_df.empty:
-            ff = _daily_ffill(fred_df, minute_idx, lag_days=1)
-            ff.columns = [f"fred_{c}" for c in ff.columns]
-            out = out.join(ff)
+        # FRED macro features (daily, 1-day-lagged). pull_many has its own
+        # stale-cache fallback for transient API outages; this outer try/except
+        # is belt-and-suspenders — even if fred returns something pathological,
+        # the live loop should not crash. Model handles missing macro as NaN.
+        try:
+            fred_df = fred.pull_many(self.cfg.get("fred_series", []),
+                                     str((now - pd.Timedelta(days=120)).date()),
+                                     str(now.date()))
+            if not fred_df.empty:
+                ff = _daily_ffill(fred_df, minute_idx, lag_days=1)
+                ff.columns = [f"fred_{c}" for c in ff.columns]
+                out = out.join(ff)
+        except Exception as e:
+            log.warning("live FRED block failed entirely: %s — proceeding without macro features", e)
 
         # Event flags + session timing.
         from utils.calendar import is_fomc_day, is_zero_dte, minutes_into_session
@@ -427,6 +436,20 @@ class LiveTrader:
             except Exception as e:
                 log.warning("trade close journaling failed: %s", e)
         self.state.position = Position()
+        # Multi-N options mode: also clear our internal list and journal each.
+        if self.state.option_positions:
+            try:
+                from live.options import get_premium_quote
+                for op in list(self.state.option_positions):
+                    if op.open_trade is not None:
+                        bid, _ = get_premium_quote(self.option_data, op.option_symbol)
+                        exit_premium = bid if bid > 0 else op.entry_premium
+                        self.journal.close_trade(op.open_trade,
+                                                  exit_price=exit_premium,
+                                                  equity_at_exit=equity, reason=reason)
+            except Exception as e:
+                log.warning("multi-N journal close failed: %s", e)
+            self.state.option_positions.clear()
 
     def _submit(self, side: OrderSide, qty: int):
         if qty <= 0:
@@ -445,43 +468,66 @@ class LiveTrader:
             log.warning("submit_order failed: %s", e)
             return None
 
-    def _flat_options(self, reason: str = "exit"):
-        """Close the open option position via market sell."""
-        pos = self.state.position
-        if not pos or not pos.option_symbol or pos.qty == 0:
+    def _flat_options(self, reason: str = "exit", pos: Position | None = None):
+        """Close one or all open option positions via market sell.
+
+        If `pos` is given, close only that position and remove it from the list.
+        If `pos` is None, close every open option position (flat-everything; used
+        for EOD-flat or kill-switch).
+        """
+        targets: list[Position] = []
+        if pos is not None:
+            targets.append(pos)
+        elif self.state.option_positions:
+            targets.extend(self.state.option_positions)
+        elif (self.state.position and self.state.position.option_symbol
+              and self.state.position.qty != 0):
+            # Legacy single-position fallback
+            targets.append(self.state.position)
+        if not targets:
             return
-        try:
-            req = MarketOrderRequest(
-                symbol=pos.option_symbol, qty=pos.qty,
-                side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
-            )
-            o = self.trading.submit_order(order_data=req)
-            log.info("OPTION CLOSE %s qty=%d reason=%s status=%s",
-                      pos.option_symbol, pos.qty, reason,
-                      getattr(o, "status", "?"))
-        except Exception as e:
-            log.warning("option close failed: %s", e)
-        # Best-effort: fetch latest premium to journal exit
-        try:
-            from live.options import get_premium_quote
-            bid, _ = get_premium_quote(self.option_data, pos.option_symbol)
-            exit_premium = bid if bid > 0 else pos.entry_premium
-            equity = self._account_equity()
-            if pos.open_trade is not None:
-                self.journal.close_trade(pos.open_trade,
-                                          exit_price=exit_premium,
-                                          equity_at_exit=equity, reason=reason)
-        except Exception as e:
-            log.warning("option journal close failed: %s", e)
-        if self.discord.enabled:
+
+        from live.options import get_premium_quote
+        equity = self._account_equity()
+        for p in targets:
+            if not p.option_symbol or p.qty == 0:
+                continue
             try:
-                self.discord.embed(
-                    title=f"OPT CLOSE {pos.option_symbol}",
-                    description=f"reason={reason}  qty={pos.qty}",
+                req = MarketOrderRequest(
+                    symbol=p.option_symbol, qty=p.qty,
+                    side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
                 )
-            except Exception:
-                pass
-        self.state.position = Position()
+                o = self.trading.submit_order(order_data=req)
+                log.info("OPTION CLOSE %s qty=%d reason=%s status=%s",
+                          p.option_symbol, p.qty, reason, getattr(o, "status", "?"))
+            except Exception as e:
+                log.warning("option close failed for %s: %s", p.option_symbol, e)
+
+            # Best-effort journal close at latest bid
+            try:
+                bid, _ = get_premium_quote(self.option_data, p.option_symbol)
+                exit_premium = bid if bid > 0 else p.entry_premium
+                if p.open_trade is not None:
+                    self.journal.close_trade(p.open_trade,
+                                              exit_price=exit_premium,
+                                              equity_at_exit=equity, reason=reason)
+            except Exception as e:
+                log.warning("option journal close failed: %s", e)
+
+            if self.discord.enabled:
+                try:
+                    self.discord.embed(
+                        title=f"OPT CLOSE {p.option_symbol}",
+                        description=f"reason={reason}  qty={p.qty}",
+                    )
+                except Exception:
+                    pass
+
+            # Remove from state lists
+            if p in self.state.option_positions:
+                self.state.option_positions.remove(p)
+            if self.state.position is p or self.state.position.option_symbol == p.option_symbol:
+                self.state.position = Position()
 
     def _submit_option(self, occ_symbol: str, qty_contracts: int, side: OrderSide):
         """Submit an option market order. Same shape as _submit but for options."""
@@ -504,20 +550,31 @@ class LiveTrader:
             return None
 
     def _plan_options_entry(self, last_price: float, model_side: str, p: float):
-        """Pick a 0DTE option contract and compute qty.
+        """Pick an option contract per config and compute qty.
 
         model_side: "long" → buy a call, "short" → buy a put.
         Returns the OptionPlan from live.options or None if no contract available.
+        Now respects:
+          • options.expiration  (e.g., "7_business_days" / "same_day" / "next_friday")
+          • options.conviction_min  (gate entry on max(p_up, p_dn))
+          • options.max_concurrent_positions (checked by caller, not here)
         """
         from datetime import date
         from live.options import (
-            pick_contract, get_premium_quote, plan_options_entry,
+            pick_contract, get_premium_quote, plan_options_entry, resolve_expiration,
         )
         opt_cfg = self.cfg.get("strategy", {}).get("options", {})
         underlying = opt_cfg.get("underlying", "SPY")
         moneyness = opt_cfg.get("moneyness", "atm")
         max_qty = int(opt_cfg.get("max_qty_contracts", 10))
         risk_pct = float(opt_cfg.get("risk_pct_per_trade", 0.01))
+        expiration_spec = opt_cfg.get("expiration", "same_day")
+        conviction_min = float(opt_cfg.get("conviction_min", 0.0))
+
+        # Hard conviction gate — refuse low-confidence signals entirely.
+        if p < conviction_min:
+            log.info("options: conviction p=%.3f < min=%.3f, skipping", p, conviction_min)
+            return None
 
         # Conviction-weighted risk_pct (same conviction logic as stocks)
         risk = self.cfg.get("risk", {})
@@ -527,14 +584,17 @@ class LiveTrader:
             s = max(0.0, min(1.0, (p - lo) / max(hi - lo, 1e-9)))
             risk_pct = risk_pct + risk_pct * s   # up to 2× base when high conviction
 
+        # Resolve expiration date from the config string (e.g. "7_business_days" → +7 BD from today)
+        expiration_date = resolve_expiration(expiration_spec)
+
         side = "call" if model_side == "long" else "put"
         contract = pick_contract(
             trading=self.trading, underlying=underlying, side=side,
-            last_price=last_price, expiration=date.today(), moneyness=moneyness,
+            last_price=last_price, expiration=expiration_date, moneyness=moneyness,
         )
         if contract is None:
-            log.warning("options: no contract found for %s %s near %s",
-                         underlying, side, last_price)
+            log.warning("options: no contract found for %s %s near %s exp=%s",
+                         underlying, side, last_price, expiration_date)
             return None
 
         bid, ask = get_premium_quote(self.option_data, contract.occ_symbol)
@@ -715,7 +775,9 @@ class LiveTrader:
         # Kill switch: if the dashboard (or you) dropped a halt.flag, refuse new entries.
         # Existing positions still exit on their schedule / at close.
         halted = HALT_FLAG.exists()
-        if halted and self.state.position.qty == 0:
+        any_open = (self.state.position.qty != 0
+                    or len(self.state.option_positions) > 0)
+        if halted and not any_open:
             log.info("HALT flag present — refusing new entries")
             self._write_heartbeat(now_utc, in_window=False)
             return
@@ -724,7 +786,7 @@ class LiveTrader:
         if not force and not self._within_trading_window(now_et):
             log.info("outside trading window (et=%s); idling", now_et.strftime("%Y-%m-%d %H:%M"))
             if now_et.hour == 15 and now_et.minute >= (60 - self.cfg["risk"]["flat_by_minutes_before_close"]):
-                if self.state.position.qty != 0:
+                if self.state.position.qty != 0 or self.state.option_positions:
                     log.info("flattening before close")
                     self._flat_all()
             self._write_heartbeat(now_utc, in_window=False)
@@ -768,33 +830,38 @@ class LiveTrader:
             return
 
         # Options exit check — premium-based, with theta-protection in last hour.
-        if (self.mode == "options" and self.state.position.qty != 0
-            and self.state.position.option_symbol):
+        # Multi-N: iterate ALL open option positions, exit each independently.
+        if self.mode == "options" and self.state.option_positions:
             try:
                 from live.options import get_premium_quote, check_options_exit
-                bid, ask = get_premium_quote(self.option_data,
-                                              self.state.position.option_symbol)
-                # Use bid as exit price (you sell at bid)
-                if bid > 0:
-                    flat_min_before = int(self.cfg["risk"]["flat_by_minutes_before_close"])
-                    eod_flat_et = now_et.replace(hour=16, minute=0, second=0, microsecond=0) \
-                                  - pd.Timedelta(minutes=flat_min_before)
-                    mins_to_eod = max(0, int((eod_flat_et - now_et).total_seconds() / 60))
-                    mins_held = max(0, int((now_utc - self.state.position.entry_ts).total_seconds() / 60))
+                flat_min_before = int(self.cfg["risk"]["flat_by_minutes_before_close"])
+                eod_flat_et = now_et.replace(hour=16, minute=0, second=0, microsecond=0) \
+                              - pd.Timedelta(minutes=flat_min_before)
+                mins_to_eod = max(0, int((eod_flat_et - now_et).total_seconds() / 60))
+                # Iterate over a snapshot — _flat_options mutates the list
+                for pos in list(self.state.option_positions):
+                    if not pos.option_symbol or pos.qty == 0:
+                        continue
+                    bid, _ask = get_premium_quote(self.option_data, pos.option_symbol)
+                    if bid <= 0:
+                        continue
+                    mins_held = max(0, int((now_utc - pos.entry_ts).total_seconds() / 60))
                     reason = check_options_exit(
-                        side=self.state.position.option_side,
-                        entry_premium=self.state.position.entry_premium,
+                        side=pos.option_side,
+                        entry_premium=pos.entry_premium,
                         current_premium=bid,
                         mins_held=mins_held,
                         mins_to_eod_flat=mins_to_eod,
-                        stop_pct=self.state.position.stop_pct,
-                        target_pct=self.state.position.target_pct,
+                        stop_pct=pos.stop_pct,
+                        target_pct=pos.target_pct,
                     )
                     if reason is not None:
-                        log.info("options exit (%s): premium %.2f→%.2f",
-                                  reason, self.state.position.entry_premium, bid)
-                        self._flat_options(reason=reason)
-                        return
+                        log.info("options exit (%s) %s: premium %.2f→%.2f",
+                                  reason, pos.option_symbol, pos.entry_premium, bid)
+                        self._flat_options(reason=reason, pos=pos)
+                # If no remaining positions, return so we re-evaluate next tick
+                if not self.state.option_positions:
+                    return
             except Exception as e:
                 log.warning("options exit check failed: %s", e)
 
@@ -939,7 +1006,16 @@ class LiveTrader:
 
         # Branch on strategy mode
         if self.mode == "options":
-            # Options entry path — buy 0DTE call/put on signal
+            # Options entry path — buy a 7DTE/0DTE/etc. call/put on signal.
+            # Multi-N: respect max_concurrent_positions; reject if at capacity.
+            opt_cfg = self.cfg.get("strategy", {}).get("options", {})
+            max_concurrent = int(opt_cfg.get("max_concurrent_positions", 1))
+            current_open = len(self.state.option_positions)
+            if current_open >= max_concurrent:
+                log.info("options: at capacity %d/%d, skipping new entry",
+                          current_open, max_concurrent)
+                return
+
             opt_side = None
             opt_p = None
             if p_up >= up_t:
@@ -951,7 +1027,8 @@ class LiveTrader:
                 if opt_plan is None:
                     log.warning("no options plan available; skipping")
                 else:
-                    log.info("options entry plan: %s", opt_plan.note)
+                    log.info("options entry plan (%d/%d concurrent): %s",
+                              current_open + 1, max_concurrent, opt_plan.note)
                     o_side = OrderSide.BUY  # always buying premium
                     self._submit_option(opt_plan.contract.occ_symbol,
                                           opt_plan.qty_contracts, o_side)
@@ -963,9 +1040,8 @@ class LiveTrader:
                         p_up=p_up, p_dn=p_down, thr_up=up_t, thr_dn=dn_t,
                         equity=equity_now,
                     )
-                    # Position state — use option-specific fields
-                    opt_cfg = self.cfg.get("strategy", {}).get("options", {})
-                    self.state.position = Position(
+                    # New position appended to the multi-position list.
+                    new_pos = Position(
                         qty=opt_plan.qty_contracts,
                         side=opt_side,
                         entry_ts=now_utc,
@@ -978,6 +1054,7 @@ class LiveTrader:
                         target_pct=float(opt_cfg.get("target_pct", 1.00)),
                         open_trade=ot,
                     )
+                    self.state.option_positions.append(new_pos)
                     if self.discord.enabled:
                         try:
                             self.discord.embed(
@@ -985,11 +1062,12 @@ class LiveTrader:
                                        f"{opt_plan.contract.occ_symbol}"),
                                 description=(f"qty={opt_plan.qty_contracts}  "
                                              f"premium=${opt_plan.entry_premium:.2f}  "
-                                             f"max loss=${opt_plan.risk_dollars:.0f}"),
+                                             f"max loss=${opt_plan.risk_dollars:.0f}  "
+                                             f"({len(self.state.option_positions)}/{max_concurrent} concurrent)"),
                                 fields=[
                                     {"name": "p", "value": f"{opt_p:.3f}", "inline": True},
-                                    {"name": "Stop %", "value": f"-{self.state.position.stop_pct*100:.0f}%", "inline": True},
-                                    {"name": "Target %", "value": f"+{self.state.position.target_pct*100:.0f}%", "inline": True},
+                                    {"name": "Stop %", "value": f"-{new_pos.stop_pct*100:.0f}%", "inline": True},
+                                    {"name": "Target %", "value": f"+{new_pos.target_pct*100:.0f}%", "inline": True},
                                 ],
                             )
                         except Exception:

@@ -12,8 +12,16 @@ into an options trade:
 Designed to mirror the structure of research.vol_scaled_exits.compute_exit_plan
 so the live loop can dispatch on a config flag without much restructuring.
 
-Defaults assume buying ATM 0DTE options on SPY — the most liquid option contract
-on US equities, which is the easiest to fill cleanly at retail size.
+Default config (configs/v1.yaml strategy.options) is the research-validated
+winner: 7-DTE ATM, p≥0.55, risk 2%, multi=3 concurrent positions, no theta
+protection. See research/sweep_v4_stress_oos.py for validation history.
+
+LIVE INTEGRATION TODO (loop.py changes needed for the new config):
+  1. Pass conviction_min from config → reject entries where max(p_up, p_dn) < it.
+  2. Pass max_concurrent_positions → loop should track open option positions
+     in a list, allow up to N before blocking new entries.
+  3. Use resolve_expiration() below when building the contract — currently
+     loop.py calls pick_contract(expiration=date.today()) which forces 0DTE.
 """
 from __future__ import annotations
 
@@ -57,6 +65,69 @@ def format_occ_symbol(underlying: str, expiration: date, side: str, strike: floa
     strike_int = int(round(strike * 1000))
     strike_str = f"{strike_int:08d}"
     return f"{root.strip()}{date_str}{cp}{strike_str}"
+
+
+# ---------- expiration resolution ----------
+
+def resolve_expiration(spec: str, today: Optional[date] = None) -> date:
+    """Convert config string → expiration date.
+
+    Supported values for `spec`:
+      • "same_day" / "0dte"           — today
+      • "next_friday"                  — next Friday on or after today
+      • "next_monthly"                 — third Friday of next month (standard)
+      • "7_business_days" / "7dte"    — 7 business days from today
+      • "Ndte" or "N_business_days"   — N business days from today (parameterised)
+
+    The 7DTE default matches the research-validated winner config.
+    """
+    if today is None:
+        today = date.today()
+
+    s = (spec or "").strip().lower()
+    if s in {"same_day", "0dte", ""}:
+        return today
+    if s == "next_friday":
+        # 4 = Friday in Python's weekday()
+        days_ahead = (4 - today.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return today + timedelta(days=days_ahead)
+    if s == "next_monthly":
+        # Third Friday of next month
+        if today.month == 12:
+            year, month = today.year + 1, 1
+        else:
+            year, month = today.year, today.month + 1
+        first = date(year, month, 1)
+        first_friday = first + timedelta(days=(4 - first.weekday()) % 7)
+        return first_friday + timedelta(days=14)
+
+    # "Ndte" or "N_business_days"
+    n = None
+    if s.endswith("dte"):
+        try:
+            n = int(s[:-3])
+        except ValueError:
+            n = None
+    elif s.endswith("_business_days"):
+        try:
+            n = int(s.split("_")[0])
+        except ValueError:
+            n = None
+
+    if n is None:
+        # Unknown spec — fall back to same-day
+        return today
+
+    # Walk forward N business days (skip Sat/Sun)
+    d = today
+    added = 0
+    while added < n:
+        d = d + timedelta(days=1)
+        if d.weekday() < 5:   # Mon-Fri
+            added += 1
+    return d
 
 
 # ---------- contract selection ----------

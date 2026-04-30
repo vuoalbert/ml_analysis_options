@@ -94,7 +94,9 @@ docker compose build
 docker compose up -d
 docker compose logs -f loop
 ```
-Dashboard appears on port 8503 (configured in `docker-compose.yml`).
+Dashboard appears on port **8504** (configured in `docker-compose.yml`).
+Container names are `ml_options-loop` and `ml_options-dashboard` — distinct
+from the stocks-mode `ml_v3-*` instance so both can coexist on the same VM.
 
 ### Side-by-side with ml_analysis
 This repo is intentionally compatible with running alongside the original `ml_analysis` stock bot on the same VM (different container names, different host port). They share `cache/` if you symlink, otherwise each pulls bars independently.

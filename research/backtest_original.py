@@ -125,13 +125,11 @@ def run_backtest(start: str, end: str):
     print(f"  p_dn:  max={pred['p_down'].max():.3f}  ≥0.57 rows={int((pred['p_down']>=thr_dn).sum())}")
     print()
 
-    # Filter to RTH + skip first/last N min (live policy)
-    rth_mask = pred.index.to_series().apply(
-        lambda t: 13 * 60 + 30 + c["risk"]["skip_first_minutes"]
-                  <= t.hour * 60 + t.minute
-                  < 20 * 60 - c["risk"]["skip_last_minutes"]
-    )
-    pred = pred[rth_mask.values]
+    # Filter to RTH + skip first/last N min (live policy) — vectorized
+    minutes_of_day = pred.index.hour * 60 + pred.index.minute
+    rth_lo = 13 * 60 + 30 + c["risk"]["skip_first_minutes"]
+    rth_hi = 20 * 60 - c["risk"]["skip_last_minutes"]
+    pred = pred[(minutes_of_day >= rth_lo) & (minutes_of_day < rth_hi)]
 
     # SPY bars (high/low not needed for horizon-only baseline, but kept for symmetry)
     bars = out[[f"{sym.lower()}_open", f"{sym.lower()}_high", f"{sym.lower()}_low",

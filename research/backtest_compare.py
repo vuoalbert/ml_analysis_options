@@ -80,12 +80,11 @@ def get_predictions_and_bars(start: str, end: str, artifact_name: str = "latest"
     pred = pd.DataFrame(proba, index=feats.index, columns=["p_down", "p_flat", "p_up"])
     pred["close"] = out.loc[pred.index, f"{sym.lower()}_close"]
 
-    rth_mask = pred.index.to_series().apply(
-        lambda t: 13 * 60 + 30 + c["risk"]["skip_first_minutes"]
-                  <= t.hour * 60 + t.minute
-                  < 20 * 60 - c["risk"]["skip_last_minutes"]
-    )
-    pred = pred[rth_mask.values]
+    # Vectorized RTH mask (was per-element .apply — 100× slower)
+    minutes_of_day = pred.index.hour * 60 + pred.index.minute
+    rth_lo = 13 * 60 + 30 + c["risk"]["skip_first_minutes"]
+    rth_hi = 20 * 60 - c["risk"]["skip_last_minutes"]
+    pred = pred[(minutes_of_day >= rth_lo) & (minutes_of_day < rth_hi)]
 
     bars = out[[f"{sym.lower()}_open", f"{sym.lower()}_high", f"{sym.lower()}_low",
                  f"{sym.lower()}_close"]].rename(columns={

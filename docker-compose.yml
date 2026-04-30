@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.loop
-    image: ml_v3-loop:latest
-    container_name: ml_v3-loop
+    image: ml_options-loop:latest
+    container_name: ml_options-loop
     restart: unless-stopped
     env_file: .env
     environment:
@@ -20,14 +20,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dashboard
-    image: ml_v3-dashboard:latest
-    container_name: ml_v3-dashboard
+    image: ml_options-dashboard:latest
+    container_name: ml_options-dashboard
     restart: unless-stopped
     env_file: .env
     environment:
       TZ: America/New_York
     ports:
-      - "8503:8501"
+      - "8504:8501"
     volumes:
       - ./artifacts:/app/artifacts:ro
       - ./reports:/app/reports
