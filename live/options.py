@@ -267,7 +267,7 @@ def check_options_exit(
     mins_to_eod_flat: int,
     stop_pct: float = 0.50,           # exit if premium drops 50%
     target_pct: float = 1.00,         # exit if premium doubles
-    theta_protect_mins: int = 60,     # if 60 min before EOD-flat and not in profit, exit
+    theta_protect_mins: int = 0,      # default OFF — only meaningful for 0DTE; bug: was 60
 ) -> Optional[str]:
     """Premium-based + time-decay-aware exit decision.
 

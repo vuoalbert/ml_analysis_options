@@ -848,6 +848,11 @@ class LiveTrader:
                     if bid <= 0:
                         continue
                     mins_held = max(0, int((now_utc - pos.entry_ts).total_seconds() / 60))
+                    # Read theta_protect_mins from config (default 0 = disabled).
+                    # Backtest validated 1,397%/yr with theta_protect OFF; live was
+                    # silently using default 60min and crushing win rate from 80% → 38%.
+                    _opt_cfg = self.cfg.get("strategy", {}).get("options", {}) or {}
+                    _theta_mins = int(_opt_cfg.get("theta_protect_mins", 0))
                     reason = check_options_exit(
                         side=pos.option_side,
                         entry_premium=pos.entry_premium,
@@ -856,6 +861,7 @@ class LiveTrader:
                         mins_to_eod_flat=mins_to_eod,
                         stop_pct=pos.stop_pct,
                         target_pct=pos.target_pct,
+                        theta_protect_mins=_theta_mins,
                     )
                     if reason is not None:
                         log.info("options exit (%s) %s: premium %.2f→%.2f",

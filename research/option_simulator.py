@@ -121,6 +121,7 @@ class OptionsSimConfig:
     target_pct: float = TARGET_PCT
     theta_protect_mins: int = THETA_PROTECT_MINS
     theta_protect_profit_thresh: float = 0.10  # if mins_to_flat ≤ X and pct_change < this, exit
+    theta_protect_any_dte: bool = False  # if True, fires for any DTE (matches live behaviour)
     entry_cost_bps: float = ENTRY_COST_BPS
     exit_cost_bps: float = EXIT_COST_BPS
     rfr: float = RFR
@@ -259,7 +260,10 @@ def make_options_simulator(cfg: OptionsSimConfig):
             if pct_change >= cfg.target_pct:
                 exit_ts = ts_j; exit_premium = premium_j; reason = "target"; break
             # Theta protection only meaningful for 0DTE — turn off if DTE > 0 unless overridden
-            if (cfg.dte == 0 and cfg.theta_protect_mins > 0
+            # theta_protect — fires for DTE=0 always; for DTE>0 if theta_protect_any_dte=True
+            # (matches live `live/options.py::check_options_exit` which doesn't gate on DTE)
+            if ((cfg.dte == 0 or cfg.theta_protect_any_dte)
+                and cfg.theta_protect_mins > 0
                 and mins_to_flat <= cfg.theta_protect_mins
                 and pct_change < cfg.theta_protect_profit_thresh):
                 exit_ts = ts_j; exit_premium = premium_j; reason = "theta_protect"; break
