@@ -1095,14 +1095,52 @@ class LiveTrader:
                     _enter("short", plan)
 
     def run_forever(self):
+        # ── Watchdog: kill any single iteration that exceeds 5 minutes ────────
+        # Prevents indefinite hangs on network calls (DNS, broker API stuck).
+        # If an iteration goes silent for >5 min, SIGALRM fires → exception →
+        # docker restart policy kicks in.
+        import signal as _signal
+        ITERATION_TIMEOUT_SECONDS = 300
+
+        def _alarm_handler(signum, frame):
+            raise TimeoutError(f"iteration exceeded {ITERATION_TIMEOUT_SECONDS}s — watchdog fired")
+
+        # Set global socket timeout so any HTTP/socket call can't hang forever
+        import socket as _socket
+        _socket.setdefaulttimeout(60)  # 60s max per network call
+
+        try:
+            _signal.signal(_signal.SIGALRM, _alarm_handler)
+        except (AttributeError, ValueError):
+            # Windows or non-main thread doesn't support SIGALRM — soft-degrade
+            pass
+
         poll = int(self.cfg["live"]["poll_seconds"])
         last_hb = 0.0
         hb_period = int(self.cfg["live"]["heartbeat_log_seconds"])
-        log.info("live loop starting poll=%ds paper=%s", poll, self.cfg["live"]["paper"])
+        log.info("live loop starting poll=%ds paper=%s watchdog=%ds",
+                 poll, self.cfg["live"]["paper"], ITERATION_TIMEOUT_SECONDS)
+
         while not self._stop:
             t0 = time.time()
             try:
+                # Arm watchdog before iteration; disarm after
+                try:
+                    _signal.alarm(ITERATION_TIMEOUT_SECONDS)
+                except (AttributeError, OSError):
+                    pass
                 self.iterate()
+                try:
+                    _signal.alarm(0)  # disarm
+                except (AttributeError, OSError):
+                    pass
+            except TimeoutError as e:
+                log.error("WATCHDOG: %s — exiting so docker can restart cleanly", e)
+                if self.discord.enabled:
+                    self.discord.crash(f"Watchdog: iteration hung > {ITERATION_TIMEOUT_SECONDS}s. Container will restart.")
+                # Exit with non-zero so docker `restart: unless-stopped` kicks in
+                import sys
+                sys.exit(2)
             except Exception as e:
                 log.exception("iterate crashed: %s", e)
                 if self.discord.enabled:
