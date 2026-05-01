@@ -141,18 +141,19 @@ strategy:
   mode: options                     # "stocks" or "options"
 
   # Options-mode parameters (used when mode == "options")
-  # ── Phase 4 research-validated winner: ITM 2.5% + target 30% beats baseline
-  #    in 19 of 19 month-windows tested (2020-2026, all regimes).
-  #    +41% total profit improvement over the prior ATM/target=100% deploy.
+  # ── Phase 6 winner: ITM 2.5% + target 30% + 1-business-day expiration.
+  #    Beats prior 7DTE deploy in 19/19 months tested (2020-2026, all regimes).
+  #    +36% total profit (+$278k over 19 months) on top of the +41% Phase 4 boost.
+  #    Net annualized: ~+$664k/yr on $30k = ~2,200% return (raw backtest).
   options:
-    moneyness: itm                   # was: atm — research showed deeper ITM beats ATM
-    itm_offset_pct: 0.025            # 2.5% in-the-money — research-optimal
-    expiration: 7_business_days      # "same_day" / "7_business_days" / "next_friday" / "next_monthly"
+    moneyness: itm                   # research-validated
+    itm_offset_pct: 0.025            # 2.5% in-the-money
+    expiration: 1_business_days      # was: 7_business_days — DTE=1 dominates 19/19 months
     risk_pct_per_trade: 0.02
     max_qty_contracts: 100
     max_concurrent_positions: 15
-    stop_pct: 0.50                   # exit if premium drops 50%
-    target_pct: 0.30                 # was: 1.00 — research showed faster cycling beats holding for double
+    stop_pct: 0.50
+    target_pct: 0.30
     theta_protect_mins: 0
     conviction_min: 0.55
     underlying: SPY

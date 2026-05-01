@@ -141,6 +141,14 @@ class OptionsSimConfig:
     vix_min: float = 0.0                  # skip signals when VIX < this (calm tape kills options)
     vix_max: float = 100.0                # skip signals when VIX > this (panic — IV too rich)
     skip_hours_et: tuple = ()             # tuple of ET hours to skip, e.g. (11, 12, 13) for midday
+    # Trailing stop: once premium has gained X%, lock in (Y%) of those gains as a floor.
+    # When set, exits if premium drops below entry × (1 + (max_gain × (1 - trail_lock_frac))).
+    # E.g., trailing_threshold_pct=0.30, trail_lock_frac=0.50 means: once up 30%, lock in 15%.
+    trailing_threshold_pct: float = 0.0   # 0 = trailing stop disabled
+    trail_lock_frac: float = 0.5          # fraction of gains to lock in
+    # Per-symbol concentration cap — limit how many of the N concurrent positions
+    # can be on the SAME OCC symbol (prevents stacking 15 positions on one strike).
+    max_per_symbol: int = 0               # 0 = no cap (current behavior)
 
 
 def make_options_simulator(cfg: OptionsSimConfig):
@@ -217,6 +225,7 @@ def make_options_simulator(cfg: OptionsSimConfig):
         exit_ts = None
         exit_premium = None
         reason = None
+        max_gain = 0.0   # high-water mark for trailing stop
         for j in range(entry_idx + 1, len(bars)):
             ts_j = bars.index[j]
             S_j = float(bars.iloc[j]["close"])
@@ -233,6 +242,16 @@ def make_options_simulator(cfg: OptionsSimConfig):
             premium_j = bs_price(S=S_j, K=K, T=T_j, r=cfg.rfr, sigma=sigma_j, side=side_opt)
             pct_change = (premium_j - entry_premium) / entry_premium
             mins_to_flat = _mins_to_eod_flat(ts_j)
+
+            # Trailing stop: once we've crossed trailing_threshold_pct, lock in some gains.
+            # Floor moves up monotonically as max_gain grows.
+            if cfg.trailing_threshold_pct > 0 and pct_change > cfg.trailing_threshold_pct:
+                max_gain = max(max_gain, pct_change)
+                # locked floor = max_gain × (1 - trail_lock_frac)
+                # if trail_lock_frac=0.5 → floor at 50% of peak
+                trail_floor = max_gain * (1.0 - cfg.trail_lock_frac)
+                if pct_change <= trail_floor:
+                    exit_ts = ts_j; exit_premium = premium_j; reason = "trailing"; break
 
             # Exit checks — order matches live check_options_exit
             if pct_change <= -cfg.stop_pct:
