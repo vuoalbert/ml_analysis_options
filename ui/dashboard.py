@@ -239,8 +239,16 @@ except Exception:
 # Today's fills + trades
 today_fills = d.recent_fills(lookback_hours=24, symbol="SPY")
 today_trades = d.pair_entries_exits(today_fills) if not today_fills.empty else pd.DataFrame()
-day_pnl = float(today_trades["pnl_dollars"].sum()) if not today_trades.empty else 0.0
 eq = float(acct.get("equity", 0))
+# Source of truth for today's P&L: Alpaca's account snapshot.
+# Pair-based P&L from trades table can drift if there are unmatched fills
+# (open positions, partial closes) — Alpaca's equity-vs-last_equity is exact.
+_last_eq = float(acct.get("last_equity", 0)) if acct.get("last_equity") else 0
+if _last_eq > 0:
+    day_pnl = eq - _last_eq          # ← TRUE today P&L from broker
+else:
+    # Fallback to paired-trades sum if last_equity unavailable
+    day_pnl = float(today_trades["pnl_dollars"].sum()) if not today_trades.empty else 0.0
 last_price = (hb or {}).get("last_price") or 0
 day_pnl_pct = (day_pnl / eq * 100) if eq else 0
 ot = (hb or {}).get("open_trade") or {}

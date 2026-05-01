@@ -66,6 +66,7 @@ def account_info() -> dict:
         a = trading_client().get_account()
         return {
             "equity": float(a.equity),
+            "last_equity": float(a.last_equity) if a.last_equity else 0.0,  # yesterday's close
             "cash": float(a.cash),
             "buying_power": float(a.buying_power),
             "daytrade_count": int(getattr(a, "daytrade_count", 0) or 0),
@@ -184,13 +185,18 @@ def recent_fills(lookback_hours: int = 8, symbol: str | None = None) -> pd.DataF
 
 
 def pair_entries_exits(fills: pd.DataFrame) -> pd.DataFrame:
-    """Pair each entry fill with its next opposite-side fill as the exit.
+    """Pair entry fills with exit fills using proper FIFO with quantity tracking.
+
+    Critical fix: when a batch sell (e.g., qty=8) closes multiple buys, this
+    properly walks through the buy queue consuming each one's quantity until
+    the sell is fully accounted for. The previous implementation only paired
+    1 buy per sell, dropping the rest and severely under-counting P&L.
 
     For OPTIONS: pairs per OCC symbol independently (multi=N strategy).
     For EQUITY: assumes one-position-at-a-time stack.
 
-    Each row represents a closed round-trip with entry/exit timestamps,
-    prices, and P&L. Unmatched entries are dropped (open positions).
+    Each row represents one round-trip lot. A single batch close can produce
+    multiple rows (one per buy lot it consumes).
     """
     if fills.empty:
         return pd.DataFrame()
@@ -201,34 +207,56 @@ def pair_entries_exits(fills: pd.DataFrame) -> pd.DataFrame:
     for sym, group in fills.groupby("symbol"):
         group = group.sort_values("filled_at").reset_index(drop=True)
         is_option = bool(group["is_option"].iloc[0]) if "is_option" in group.columns else False
-        # Queue of buys (entries) for this symbol
-        entries = []
+
+        # Queue of (fill_dict, remaining_qty) for unmatched buys
+        entries: list[tuple[dict, float]] = []
+
         for _, f in group.iterrows():
+            f_dict = f.to_dict()
+            f_qty = float(f["filled_qty"])
+
             if f["side"] == "buy":
-                entries.append(f)
-            elif f["side"] == "sell" and entries:
-                # Close the OLDEST open buy first (FIFO).
-                last = entries.pop(0)
-                pnl_per_share = (f["filled_avg_price"] - last["filled_avg_price"])
-                qty = min(float(last["filled_qty"]), float(f["filled_qty"]))
-                pnl_dollars = pnl_per_share * qty * (100 if is_option else 1)
-                pnl_bp = (pnl_per_share / last["filled_avg_price"]) * 1e4 if last["filled_avg_price"] else 0
+                entries.append((f_dict, f_qty))
+                continue
+
+            if f["side"] != "sell":
+                continue
+
+            # Walk the entries queue, consuming buy quantities until sell is filled
+            sell_remaining = f_qty
+            while sell_remaining > 0 and entries:
+                buy_fill, buy_remaining = entries[0]
+                matched_qty = min(buy_remaining, sell_remaining)
+
+                pnl_per_share = (f["filled_avg_price"] - buy_fill["filled_avg_price"])
+                pnl_dollars = pnl_per_share * matched_qty * (100 if is_option else 1)
+                pnl_bp = (pnl_per_share / buy_fill["filled_avg_price"]) * 1e4 if buy_fill["filled_avg_price"] else 0
+
                 pairs.append({
-                    "entry_at": last["filled_at"],
+                    "entry_at": buy_fill["filled_at"],
                     "exit_at": f["filled_at"],
                     "symbol": sym,
-                    "side": "long" if last["side"] == "buy" else "short",
-                    "entry_px": last["filled_avg_price"],
+                    "side": "long",
+                    "entry_px": buy_fill["filled_avg_price"],
                     "exit_px": f["filled_avg_price"],
-                    "qty": qty,
+                    "qty": matched_qty,
                     "pnl_dollars": pnl_dollars,
                     "pnl_bp": pnl_bp,
                     "is_option": is_option,
-                    "underlying": last.get("underlying", sym),
-                    "expiry": last.get("expiry"),
-                    "opt_side": last.get("opt_side"),
-                    "strike": last.get("strike"),
+                    "underlying": buy_fill.get("underlying", sym),
+                    "expiry": buy_fill.get("expiry"),
+                    "opt_side": buy_fill.get("opt_side"),
+                    "strike": buy_fill.get("strike"),
                 })
+
+                buy_remaining -= matched_qty
+                sell_remaining -= matched_qty
+
+                if buy_remaining <= 0:
+                    entries.pop(0)
+                else:
+                    # Update the partial buy at front of queue
+                    entries[0] = (buy_fill, buy_remaining)
 
     df = pd.DataFrame(pairs)
     if not df.empty:
