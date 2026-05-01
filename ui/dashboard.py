@@ -331,8 +331,16 @@ st.markdown(
 )
 
 # 4 KPI tiles row
+_MONO = '"SF Mono","Menlo",monospace'
+
 def _tile(label: str, value: str, sub: str = "", value_color: str = "#e5e7eb",
           sub_color: str = "#9ca3af", flex: int = 1) -> str:
+    sub_html = ""
+    if sub:
+        sub_html = (
+            f'<div style="font-size:0.72rem;color:{sub_color};margin-top:0.2rem;'
+            f'font-family:{_MONO};">{sub}</div>'
+        )
     return (
         f'<div style="display:flex;flex-direction:column;justify-content:center;'
         f'padding:0.7rem 1rem;background:#0a0d14;border:1px solid #1a1f2c;'
@@ -340,9 +348,9 @@ def _tile(label: str, value: str, sub: str = "", value_color: str = "#e5e7eb",
         f'  <div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.10em;'
         f'color:#6b7280;font-weight:600;margin-bottom:0.25rem;">{label}</div>'
         f'  <div style="font-size:1.3rem;color:{value_color};font-weight:600;'
-        f'font-family:\"SF Mono\",monospace;font-variant-numeric:tabular-nums;line-height:1.1;'
+        f'font-family:{_MONO};font-variant-numeric:tabular-nums;line-height:1.1;'
         f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{value}</div>'
-        f'  {f"<div style=\"font-size:0.72rem;color:{sub_color};margin-top:0.2rem;font-family:\\\"SF Mono\\\",monospace;\">{sub}</div>" if sub else ""}'
+        f'  {sub_html}'
         f'</div>'
     )
 
