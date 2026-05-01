@@ -237,8 +237,14 @@ except Exception:
     _itm_offset = _target_pct = _stop_pct = _risk_pct = 0
 
 # Today's fills + trades
-today_fills = d.recent_fills(lookback_hours=24, symbol="SPY")
+# Pull a wider window so multi-day trades (opened earlier, closed today) get paired correctly.
+# Then filter the paired trades down to today's exits in the dashboard panels.
+today_fills = d.recent_fills(lookback_hours=24*7, symbol="SPY")
 today_trades = d.pair_entries_exits(today_fills) if not today_fills.empty else pd.DataFrame()
+# Filter to trades that EXITED today only (so the trades table aligns with today P&L)
+if not today_trades.empty and "exit_at" in today_trades.columns:
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=24)
+    today_trades = today_trades[pd.to_datetime(today_trades["exit_at"]) >= cutoff].reset_index(drop=True)
 eq = float(acct.get("equity", 0))
 # Source of truth for today's P&L: Alpaca's account snapshot.
 # Pair-based P&L from trades table can drift if there are unmatched fills
