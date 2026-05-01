@@ -106,15 +106,42 @@ def all_positions() -> list:
 
 # ---- orders / fills ----
 
+def _is_occ(sym: str) -> bool:
+    """OCC option symbols are >= 15 chars and end in 8-digit strike."""
+    return isinstance(sym, str) and len(sym) >= 15 and sym[-8:].isdigit()
+
+
+def _parse_occ(sym: str) -> dict:
+    """Parse SPY260511C00712000 → {root, expiry, side, strike}."""
+    try:
+        root = sym[:-15].strip() or sym[:6].strip()
+        date_part = sym[-15:-9]
+        cp = sym[-9]
+        strike_int = int(sym[-8:])
+        return {
+            "root": root,
+            "expiry": f"20{date_part[:2]}-{date_part[2:4]}-{date_part[4:6]}",
+            "opt_side": "call" if cp == "C" else "put",
+            "strike": strike_int / 1000.0,
+        }
+    except Exception:
+        return {"root": sym, "expiry": "—", "opt_side": "?", "strike": 0.0}
+
+
 def recent_fills(lookback_hours: int = 8, symbol: str | None = None) -> pd.DataFrame:
-    """Return filled orders in the last N hours as a tidy DataFrame."""
+    """Return filled orders in the last N hours as a tidy DataFrame.
+
+    When `symbol` is given (e.g. "SPY"), this returns BOTH equity fills AND
+    option fills whose underlying matches (i.e. OCC symbols starting with
+    "SPY"). Pull is unfiltered then post-filtered by prefix, because Alpaca's
+    symbols filter does an exact match and would exclude OCC symbols.
+    """
     start = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=lookback_hours)
     try:
         req = GetOrdersRequest(
             status=QueryOrderStatus.CLOSED,
             after=start.to_pydatetime(),
             limit=500,
-            symbols=[symbol] if symbol else None,
         )
         orders = trading_client().get_orders(filter=req)
     except Exception as e:
@@ -122,17 +149,34 @@ def recent_fills(lookback_hours: int = 8, symbol: str | None = None) -> pd.DataF
 
     rows = []
     for o in orders:
-        if str(o.status).lower().endswith("filled"):
-            rows.append({
-                "submitted_at": pd.to_datetime(o.submitted_at, utc=True),
-                "filled_at": pd.to_datetime(o.filled_at, utc=True) if o.filled_at else pd.NaT,
-                "symbol": o.symbol,
-                "side": o.side.value if hasattr(o.side, "value") else str(o.side),
-                "qty": float(o.qty),
-                "filled_qty": float(o.filled_qty) if o.filled_qty else 0.0,
-                "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else float("nan"),
-                "order_id": str(o.id),
-            })
+        if not str(o.status).lower().endswith("filled"):
+            continue
+        sym = o.symbol
+        if symbol is not None:
+            # Match equity (exact) OR option (prefix match on root)
+            if sym != symbol and not (
+                _is_occ(sym) and sym.startswith(symbol[:6].strip())
+            ):
+                continue
+        is_option = _is_occ(sym)
+        meta = _parse_occ(sym) if is_option else {
+            "root": sym, "expiry": None, "opt_side": None, "strike": None,
+        }
+        rows.append({
+            "submitted_at": pd.to_datetime(o.submitted_at, utc=True),
+            "filled_at": pd.to_datetime(o.filled_at, utc=True) if o.filled_at else pd.NaT,
+            "symbol": sym,
+            "side": o.side.value if hasattr(o.side, "value") else str(o.side),
+            "qty": float(o.qty),
+            "filled_qty": float(o.filled_qty) if o.filled_qty else 0.0,
+            "filled_avg_price": float(o.filled_avg_price) if o.filled_avg_price else float("nan"),
+            "order_id": str(o.id),
+            "is_option": is_option,
+            "underlying": meta["root"],
+            "expiry": meta["expiry"],
+            "opt_side": meta["opt_side"],
+            "strike": meta["strike"],
+        })
     df = pd.DataFrame(rows)
     if not df.empty:
         df = df.sort_values("filled_at").reset_index(drop=True)
@@ -142,41 +186,53 @@ def recent_fills(lookback_hours: int = 8, symbol: str | None = None) -> pd.DataF
 def pair_entries_exits(fills: pd.DataFrame) -> pd.DataFrame:
     """Pair each entry fill with its next opposite-side fill as the exit.
 
-    Assumes one-position-at-a-time (matches our live policy). Any unmatched
-    entry at the end is kept as 'open'.
+    For OPTIONS: pairs per OCC symbol independently (multi=N strategy).
+    For EQUITY: assumes one-position-at-a-time stack.
+
+    Each row represents a closed round-trip with entry/exit timestamps,
+    prices, and P&L. Unmatched entries are dropped (open positions).
     """
     if fills.empty:
         return pd.DataFrame()
+
     pairs = []
-    stack = []
-    for _, f in fills.iterrows():
-        if not stack:
-            stack.append(f)
-            continue
-        last = stack[-1]
-        if f["side"] != last["side"]:
-            # This is an exit for the open position.
-            pnl_per_share = (f["filled_avg_price"] - last["filled_avg_price"])
-            if last["side"] == "sell":
-                pnl_per_share = -pnl_per_share
-            qty = min(last["filled_qty"], f["filled_qty"])
-            pnl_dollars = pnl_per_share * qty
-            pnl_bp = (pnl_per_share / last["filled_avg_price"]) * 1e4
-            pairs.append({
-                "entry_at": last["filled_at"],
-                "exit_at": f["filled_at"],
-                "symbol": last["symbol"],
-                "side": "long" if last["side"] == "buy" else "short",
-                "entry_px": last["filled_avg_price"],
-                "exit_px": f["filled_avg_price"],
-                "qty": qty,
-                "pnl_dollars": pnl_dollars,
-                "pnl_bp": pnl_bp,
-            })
-            stack.pop()
-        else:
-            stack.append(f)
+
+    # Split by symbol so each OCC contract has its own queue
+    for sym, group in fills.groupby("symbol"):
+        group = group.sort_values("filled_at").reset_index(drop=True)
+        is_option = bool(group["is_option"].iloc[0]) if "is_option" in group.columns else False
+        # Queue of buys (entries) for this symbol
+        entries = []
+        for _, f in group.iterrows():
+            if f["side"] == "buy":
+                entries.append(f)
+            elif f["side"] == "sell" and entries:
+                # Close the OLDEST open buy first (FIFO).
+                last = entries.pop(0)
+                pnl_per_share = (f["filled_avg_price"] - last["filled_avg_price"])
+                qty = min(float(last["filled_qty"]), float(f["filled_qty"]))
+                pnl_dollars = pnl_per_share * qty * (100 if is_option else 1)
+                pnl_bp = (pnl_per_share / last["filled_avg_price"]) * 1e4 if last["filled_avg_price"] else 0
+                pairs.append({
+                    "entry_at": last["filled_at"],
+                    "exit_at": f["filled_at"],
+                    "symbol": sym,
+                    "side": "long" if last["side"] == "buy" else "short",
+                    "entry_px": last["filled_avg_price"],
+                    "exit_px": f["filled_avg_price"],
+                    "qty": qty,
+                    "pnl_dollars": pnl_dollars,
+                    "pnl_bp": pnl_bp,
+                    "is_option": is_option,
+                    "underlying": last.get("underlying", sym),
+                    "expiry": last.get("expiry"),
+                    "opt_side": last.get("opt_side"),
+                    "strike": last.get("strike"),
+                })
+
     df = pd.DataFrame(pairs)
+    if not df.empty:
+        df = df.sort_values("entry_at").reset_index(drop=True)
     return df
 
 

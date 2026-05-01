@@ -21,6 +21,10 @@ def candlestick_with_trades(
     title: str = "SPY",
     timeframe: str = "1m",
     open_trade: dict | None = None,
+    option_trades: pd.DataFrame | None = None,
+    selected_option_trade: dict | None = None,
+    target_pct: float = 0.30,
+    stop_pct: float = 0.50,
 ) -> go.Figure:
     """Candlestick + entry/exit markers + volume + P(up)/P(down) signal panel.
 
@@ -128,6 +132,165 @@ def candlestick_with_trades(
                 line=dict(color=color, width=1, dash="dot"),
                 hoverinfo="skip", showlegend=False,
             ), row=1, col=1)
+
+    # --- option trades — markers at SPY price at trade timestamp ---
+    # For options, entry_px/exit_px are PREMIUMS (e.g. $5-20). They don't
+    # correspond to the SPY price chart's y-scale (~$700). So we look up
+    # the SPY underlying price at each trade's timestamp and mark there.
+    if option_trades is not None and not option_trades.empty:
+        ot = option_trades.copy()
+        ot["entry_at"] = pd.to_datetime(ot["entry_at"]).dt.tz_convert("America/New_York")
+        ot["exit_at"] = pd.to_datetime(ot["exit_at"]).dt.tz_convert("America/New_York")
+
+        # Lookup SPY price at each timestamp using nearest-bar
+        def _spy_at(ts):
+            if bars.empty:
+                return None
+            idx = bars.index.get_indexer([ts], method="nearest")[0]
+            if idx < 0 or idx >= len(bars):
+                return None
+            return float(bars["close"].iloc[idx])
+
+        ot["spy_at_entry"] = ot["entry_at"].apply(_spy_at)
+        ot["spy_at_exit"] = ot["exit_at"].apply(_spy_at)
+
+        calls = ot[ot["opt_side"] == "call"]
+        puts = ot[ot["opt_side"] == "put"]
+
+        if not calls.empty:
+            fig.add_trace(go.Scatter(
+                x=calls["entry_at"], y=calls["spy_at_entry"],
+                mode="markers",
+                marker=dict(symbol="triangle-up", size=11, color=UP_COLOR,
+                            line=dict(color="white", width=1)),
+                name="Call entry", hoverinfo="text", showlegend=False,
+                hovertext=[
+                    f"CALL {row.symbol}<br>strike ${row.strike:.0f}  "
+                    f"premium ${row.entry_px:.2f}<br>"
+                    f"P&L ${row.pnl_dollars:+.0f}"
+                    for row in calls.itertuples()
+                ],
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=calls["exit_at"], y=calls["spy_at_exit"],
+                mode="markers",
+                marker=dict(symbol="circle-open", size=9, color=UP_COLOR,
+                            line=dict(color=UP_COLOR, width=1.5)),
+                name="Call exit", hoverinfo="text", showlegend=False,
+                hovertext=[
+                    f"CALL exit ${row.exit_px:.2f}  "
+                    f"({row.pnl_dollars:+.0f}$)"
+                    for row in calls.itertuples()
+                ],
+            ), row=1, col=1)
+
+        if not puts.empty:
+            fig.add_trace(go.Scatter(
+                x=puts["entry_at"], y=puts["spy_at_entry"],
+                mode="markers",
+                marker=dict(symbol="triangle-down", size=11, color=DOWN_COLOR,
+                            line=dict(color="white", width=1)),
+                name="Put entry", hoverinfo="text", showlegend=False,
+                hovertext=[
+                    f"PUT {row.symbol}<br>strike ${row.strike:.0f}  "
+                    f"premium ${row.entry_px:.2f}<br>"
+                    f"P&L ${row.pnl_dollars:+.0f}"
+                    for row in puts.itertuples()
+                ],
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=puts["exit_at"], y=puts["spy_at_exit"],
+                mode="markers",
+                marker=dict(symbol="circle-open", size=9, color=DOWN_COLOR,
+                            line=dict(color=DOWN_COLOR, width=1.5)),
+                name="Put exit", hoverinfo="text", showlegend=False,
+                hovertext=[
+                    f"PUT exit ${row.exit_px:.2f}  "
+                    f"({row.pnl_dollars:+.0f}$)"
+                    for row in puts.itertuples()
+                ],
+            ), row=1, col=1)
+
+    # --- selected option trade overlay — show its TP/SL premium levels ---
+    # Premium-based TP/SL don't map to underlying SPY price directly (would
+    # need delta to convert). Instead we annotate the entry marker with the
+    # specific TP/SL premiums for this trade and draw a STRIKE line so the
+    # user can see where the option's intrinsic value kicks in.
+    if selected_option_trade:
+        st = selected_option_trade
+        try:
+            entry_ts = pd.to_datetime(st["entry_at"])
+            if entry_ts.tz is None:
+                entry_ts = entry_ts.tz_localize("UTC")
+            entry_ts = entry_ts.tz_convert("America/New_York")
+        except Exception:
+            entry_ts = None
+
+        strike = float(st.get("strike", 0))
+        entry_prem = float(st.get("entry_px", 0))
+        opt_side = st.get("opt_side", "?")
+        sym = st.get("symbol", "?")
+
+        # Premium TP / SL for this specific trade
+        tp_prem = entry_prem * (1 + target_pct)
+        sl_prem = entry_prem * (1 - stop_pct)
+
+        # Highlight entry with a bigger marker
+        if entry_ts is not None:
+            spy_at_entry = None
+            if not bars.empty:
+                idx = bars.index.get_indexer([entry_ts], method="nearest")[0]
+                if 0 <= idx < len(bars):
+                    spy_at_entry = float(bars["close"].iloc[idx])
+            if spy_at_entry is not None:
+                fig.add_trace(go.Scatter(
+                    x=[entry_ts], y=[spy_at_entry],
+                    mode="markers+text",
+                    marker=dict(symbol="star", size=24,
+                                color="#fbbf24",
+                                line=dict(color="white", width=2)),
+                    text=[f"⚡ {opt_side.upper()} {sym}"],
+                    textposition="top center",
+                    textfont=dict(color="#fbbf24", size=11),
+                    name="Selected trade", hoverinfo="text", showlegend=False,
+                    hovertext=[
+                        f"<b>SELECTED — {opt_side.upper()} {sym}</b><br>"
+                        f"strike ${strike:.0f}<br>"
+                        f"entry premium ${entry_prem:.2f}<br>"
+                        f"<span style='color:#26a69a'>target ${tp_prem:.2f} (+{target_pct*100:.0f}%)</span><br>"
+                        f"<span style='color:#ef5350'>stop ${sl_prem:.2f} (−{stop_pct*100:.0f}%)</span>"
+                    ],
+                ), row=1, col=1)
+
+        # Strike line — where intrinsic value flips
+        if strike > 0:
+            fig.add_hline(
+                y=strike,
+                line=dict(color="#fbbf24", width=1.5, dash="dot"),
+                annotation_text=f"strike ${strike:.0f}",
+                annotation_position="top right",
+                annotation_font=dict(color="#fbbf24", size=10),
+                row=1, col=1,
+            )
+
+        # TP / SL premium level annotations attached to the entry marker.
+        # We can't draw them as horizontal lines on the SPY price chart
+        # (premium ≠ underlying price), so we put them as text-block
+        # annotations near the strike line.
+        if entry_ts is not None and strike > 0:
+            tp_label = f"TP ${tp_prem:.2f}  (premium +{target_pct*100:.0f}%)"
+            sl_label = f"SL ${sl_prem:.2f}  (premium −{stop_pct*100:.0f}%)"
+            fig.add_annotation(
+                x=entry_ts, y=strike,
+                text=f"<span style='color:#26a69a'>▲ {tp_label}</span><br>"
+                     f"<span style='color:#ef5350'>▼ {sl_label}</span>",
+                showarrow=True, arrowhead=2, arrowcolor="#fbbf24",
+                ax=40, ay=-60,
+                bgcolor="rgba(10,13,20,0.9)",
+                bordercolor="#fbbf24", borderwidth=1,
+                font=dict(size=10, color="#e5e7eb"),
+                row=1, col=1,
+            )
 
     # --- open-trade stop/target/entry levels ---
     # Drawn as full-width horizontal lines on the price panel so it's obvious

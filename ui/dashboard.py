@@ -412,7 +412,16 @@ with tab_live:
     bars = d.fetch_bars(symbol, hours=hours, timeframe=timeframe)
     preds = d.replay_predictions(hours=hours) if timeframe == "1m" else pd.DataFrame()
     fills = d.recent_fills(lookback_hours=max(hours, 48), symbol=symbol)
-    trades = d.pair_entries_exits(fills) if not fills.empty else pd.DataFrame()
+    all_trades_paired = d.pair_entries_exits(fills) if not fills.empty else pd.DataFrame()
+
+    # Split into equity vs option round-trips
+    if not all_trades_paired.empty and "is_option" in all_trades_paired.columns:
+        equity_trades = all_trades_paired[~all_trades_paired["is_option"]].reset_index(drop=True)
+        option_trades = all_trades_paired[all_trades_paired["is_option"]].reset_index(drop=True)
+    else:
+        equity_trades = all_trades_paired
+        option_trades = pd.DataFrame()
+    trades = equity_trades  # backwards-compat name for chart
 
     event_marks = pd.DataFrame()
     if not bars.empty:
@@ -427,18 +436,48 @@ with tab_live:
                 "label": ["FOMC"] * len(fomc_days),
             })
 
+    # Trade selector — pick one option trade to highlight on chart
+    selected_trade_dict = None
+    if not option_trades.empty:
+        # Build human-readable labels for the selector
+        opt_labels = ["— all trades, no highlight —"]
+        for i, row in option_trades.iterrows():
+            ts_et = pd.to_datetime(row["entry_at"]).tz_convert("America/New_York")
+            opt_labels.append(
+                f"#{i+1}  {ts_et.strftime('%m/%d %H:%M')}  "
+                f"{(row['opt_side'] or '?').upper()} ${row.get('strike', 0):.0f}  "
+                f"premium ${row['entry_px']:.2f}  "
+                f"P&L ${row['pnl_dollars']:+.0f}"
+            )
+        selected_label = st.selectbox(
+            "Highlight a trade (TP/SL projected on chart)",
+            options=opt_labels, index=0, key="selected_trade_label",
+        )
+        if selected_label != opt_labels[0]:
+            sel_idx = opt_labels.index(selected_label) - 1  # account for "all" entry
+            selected_trade_dict = option_trades.iloc[sel_idx].to_dict()
+
     thr = (float(art.thresholds["up"]), float(art.thresholds["down"]))
     if bars.empty:
         st.info(f"No `{timeframe}` bars in last {hours}h — likely outside RTH. Try a longer window.")
     else:
-        fig = c.candlestick_with_trades(bars, trades, preds, thresholds=thr,
-                                        event_marks=event_marks, title="",
-                                        timeframe=timeframe,
-                                        open_trade=ot or None)
+        fig = c.candlestick_with_trades(
+            bars, trades, preds,
+            thresholds=thr,
+            event_marks=event_marks,
+            title="",
+            timeframe=timeframe,
+            open_trade=ot or None,
+            option_trades=option_trades if not option_trades.empty else None,
+            selected_option_trade=selected_trade_dict,
+            target_pct=_target_pct,
+            stop_pct=_stop_pct,
+        )
         st.plotly_chart(fig, use_container_width=True,
                         config={"displayModeBar": False}, key="candlestick")
     st.caption(
-        "Drag to zoom · y-axis for price · rangeslider for time · click legend to hide series · double-click resets"
+        "Drag to zoom · y-axis for price · rangeslider for time · click legend to hide series · "
+        "Pick a trade above to overlay its specific TP/SL on the chart"
     )
 
     # Open Options Positions panel
@@ -484,32 +523,48 @@ with tab_live:
     left, right = st.columns([1.15, 1.0], gap="large")
     with left:
         st.markdown("#### Trades — last 48h")
-        if trades.empty:
+        # Combined view: option trades take priority since that's what the bot does
+        display_trades = option_trades if not option_trades.empty else equity_trades
+        if display_trades.empty:
             st.markdown(
                 '<div style="color:#6b7280;font-size:0.9rem;padding:1rem 0;">'
                 "No round-trips yet. Markers populate once the loop trades."
                 "</div>", unsafe_allow_html=True,
             )
         else:
-            show = trades.copy()
-            show["Entry"] = show["entry_at"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
-            show["Exit"] = show["exit_at"].dt.tz_convert("America/New_York").dt.strftime("%H:%M")
-            show = show[["Entry", "Exit", "side", "entry_px", "exit_px", "qty",
-                         "pnl_dollars", "pnl_bp"]]
-            show.columns = ["Entry", "Exit", "Side", "Entry $", "Exit $", "Qty", "P&L $", "P&L bp"]
-            st.dataframe(
-                show.iloc[::-1].style.format({
+            show = display_trades.copy()
+            show["Entry"] = show["entry_at"].dt.tz_convert("America/New_York").dt.strftime("%m/%d %H:%M")
+            show["Exit"] = show["exit_at"].dt.tz_convert("America/New_York").dt.strftime("%m/%d %H:%M")
+            if "is_option" in show.columns and show["is_option"].any():
+                # Options table layout
+                show["Type"] = show["opt_side"].str.upper().fillna("EQUITY")
+                show["Strike"] = show.get("strike", pd.Series([None]*len(show)))
+                show["Entry $"] = show["entry_px"]
+                show["Exit $"] = show["exit_px"]
+                show = show[["Entry", "Exit", "Type", "Strike", "Entry $", "Exit $", "qty", "pnl_dollars"]]
+                show.columns = ["Entry", "Exit", "Type", "Strike", "Entry $", "Exit $", "Qty", "P&L $"]
+                fmt = {
+                    "Strike": "${:,.0f}", "Entry $": "${:.2f}", "Exit $": "${:.2f}",
+                    "Qty": "{:.0f}", "P&L $": "${:+,.0f}",
+                }
+            else:
+                show = show[["Entry", "Exit", "side", "entry_px", "exit_px", "qty",
+                             "pnl_dollars", "pnl_bp"]]
+                show.columns = ["Entry", "Exit", "Side", "Entry $", "Exit $", "Qty", "P&L $", "P&L bp"]
+                fmt = {
                     "Entry $": "${:,.2f}", "Exit $": "${:,.2f}",
                     "Qty": "{:.0f}", "P&L $": "${:+,.2f}", "P&L bp": "{:+.1f}",
-                }),
+                }
+            st.dataframe(
+                show.iloc[::-1].style.format(fmt),
                 hide_index=True, use_container_width=True, height=320,
             )
-            total_pnl = trades["pnl_dollars"].sum()
-            wins = (trades["pnl_dollars"] > 0).sum()
-            hit = wins / len(trades) if len(trades) else 0
+            total_pnl = display_trades["pnl_dollars"].sum()
+            wins = (display_trades["pnl_dollars"] > 0).sum()
+            hit = wins / len(display_trades) if len(display_trades) else 0
             st.markdown(
                 f'<div style="color:#9ca3af;font-size:0.85rem;margin-top:0.4rem;">'
-                f'<span style="color:#e5e7eb;font-weight:600;">{len(trades)}</span> trades · '
+                f'<span style="color:#e5e7eb;font-weight:600;">{len(display_trades)}</span> trades · '
                 f'Hit rate <span style="color:#e5e7eb;font-weight:600;">{hit*100:.1f}%</span> · '
                 f'Cumulative <span style="color:{"#26a69a" if total_pnl>=0 else "#ef5350"};'
                 f'font-weight:600;">${total_pnl:+.2f}</span>'
