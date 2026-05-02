@@ -391,8 +391,8 @@ st.markdown(
 # ============================================================================
 # TABS — Live / Performance / Risk / Health
 # ============================================================================
-tab_live, tab_perf, tab_risk, tab_health = st.tabs([
-    "Live", "Performance", "Risk", "Health"
+tab_live, tab_insights, tab_perf, tab_risk, tab_health = st.tabs([
+    "Live", "Insights", "Performance", "Risk", "Health"
 ])
 
 
@@ -596,6 +596,127 @@ with tab_live:
         else:
             st.plotly_chart(c.shap_bar(shap_df), use_container_width=True,
                             config={"displayModeBar": False}, key="shap_bar")
+
+
+# ---------------- INSIGHTS TAB ----------------
+with tab_insights:
+    from ui import insights as ins
+
+    # Pull a recent slice of fills (last 8 days covers today + rolling alpha)
+    insights_fills = d.recent_fills(lookback_hours=24*8, symbol="SPY")
+    insights_trades = d.pair_entries_exits(insights_fills) if not insights_fills.empty else pd.DataFrame()
+
+    st.markdown("##### Insights — live realtime panels")
+    st.caption("Auto-refreshes every 15s. All data from live Alpaca fills + bar feed.")
+
+    # Row 1: Reason-code chart + today's tail-risk
+    col_a, col_b = st.columns([3, 2])
+    with col_a:
+        st.markdown("**Today's exits by reason**")
+        try:
+            fig = ins.reason_code_chart(insights_trades)
+            st.plotly_chart(fig, use_container_width=True,
+                             config={"displayModeBar": False}, key="ins_reason")
+        except Exception as e:
+            st.error(f"reason chart error: {e}")
+
+    with col_b:
+        st.markdown("**Today's tail-risk**")
+        try:
+            tr = ins.today_tail_risk(insights_trades)
+            tr_html = (
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:{_MONO};">'
+                f'<div><div style="color:#94a3b8;font-size:10px">N TODAY</div>'
+                f'<div style="font-size:20px;font-weight:700">{tr["n_today"]}</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">WIN%</div>'
+                f'<div style="font-size:20px;font-weight:700;color:{"#10b981" if tr["win_today"]>=50 else "#ef4444"}">{tr["win_today"]:.0f}%</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">WORST TRADE</div>'
+                f'<div style="font-size:18px;font-weight:700;color:#ef4444">${tr["worst"]:+,.0f}</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">INTRADAY DD</div>'
+                f'<div style="font-size:18px;font-weight:700;color:{"#ef4444" if tr["intraday_dd"]<-100 else "#94a3b8"}">${tr["intraday_dd"]:+,.0f}</div></div>'
+                f'<div style="grid-column:span 2"><div style="color:#94a3b8;font-size:10px">CURRENT LOSS STREAK</div>'
+                f'<div style="font-size:24px;font-weight:700;color:{"#ef4444" if tr["loss_streak"]>=3 else "#94a3b8"}">{tr["loss_streak"]} losses in a row</div></div>'
+                f'</div>'
+            )
+            st.markdown(tr_html, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"tail-risk error: {e}")
+
+    st.markdown("---")
+
+    # Row 2: turnover gauge + alpha gauge
+    col_c, col_d = st.columns([1, 1])
+    with col_c:
+        st.markdown("**Live turnover (last 8h)**")
+        try:
+            tg = ins.live_turnover(insights_trades, hours_lookback=8)
+            tg_html = (
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-family:{_MONO};">'
+                f'<div><div style="color:#94a3b8;font-size:10px">TRADES/HR</div>'
+                f'<div style="font-size:24px;font-weight:700">{tg["trades_per_hr"]:.1f}</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">N IN WINDOW</div>'
+                f'<div style="font-size:24px;font-weight:700">{tg["n_lookback"]}</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">CALLS / PUTS</div>'
+                f'<div style="font-size:18px;font-weight:700">{tg["long_pct"]:.0f}% / {tg["short_pct"]:.0f}%</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">AVG HOLD</div>'
+                f'<div style="font-size:18px;font-weight:700">{tg["avg_hold_min"]:.0f} min</div></div>'
+                f'</div>'
+            )
+            st.markdown(tg_html, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"turnover error: {e}")
+
+    with col_d:
+        st.markdown("**Live alpha (P&L vs SPY)**")
+        try:
+            spy_bars = d.fetch_bars("SPY", hours=24*20, timeframe="1d") if hasattr(d, "fetch_bars") else pd.DataFrame()
+            if spy_bars.empty:
+                spy_bars = d.fetch_bars("SPY", hours=24*5, timeframe="1m")
+            ag = ins.rolling_alpha(insights_trades, spy_bars, window_days=20)
+            corr_color = "#10b981" if abs(ag["corr"]) < 0.3 else ("#f59e0b" if abs(ag["corr"]) < 0.6 else "#ef4444")
+            ag_html = (
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-family:{_MONO};">'
+                f'<div><div style="color:#94a3b8;font-size:10px">P&L–SPY CORR</div>'
+                f'<div style="font-size:24px;font-weight:700;color:{corr_color}">{ag["corr"]:+.2f}</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">N DAYS</div>'
+                f'<div style="font-size:24px;font-weight:700">{ag["n_days"]}</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">ALPHA $/DAY</div>'
+                f'<div style="font-size:18px;font-weight:700;color:#10b981">${ag["alpha_dollars_per_day"]:+,.0f}</div></div>'
+                f'<div><div style="color:#94a3b8;font-size:10px">$ PER 1% SPY</div>'
+                f'<div style="font-size:18px;font-weight:700">${ag.get("beta_dollars_per_pct", 0):+,.0f}</div></div>'
+                f'</div>'
+                f'<div style="font-size:11px;color:#64748b;margin-top:6px">|corr| &lt; 0.3 = market-neutral</div>'
+            )
+            st.markdown(ag_html, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"alpha error: {e}")
+
+    st.markdown("---")
+
+    # Row 3: trail-stop heatmap (full width)
+    st.markdown("**Trail-stop heatmap (open positions)**")
+    try:
+        all_pos = d.all_positions()
+        # Compute current-price-aware trail states. Alpaca position objects already
+        # have current_price + avg_entry_price.
+        states = ins.trail_stop_states(all_pos)
+        ts_summary = (
+            f'<div style="display:flex;gap:16px;font-family:{_MONO};margin-bottom:8px;">'
+            f'<div><span style="color:#10b981">●</span> trail armed: <b>{states["n_above_arm"]}</b></div>'
+            f'<div><span style="color:#06b6d4">●</span> in profit (below arm): <b>{states["n_in_profit"]}</b></div>'
+            f'<div><span style="color:#ef4444">●</span> underwater: <b>{states["n_underwater"]}</b></div>'
+            f'<div style="margin-left:auto;color:#94a3b8">N open: {states["n_open"]}</div>'
+            f'</div>'
+        )
+        st.markdown(ts_summary, unsafe_allow_html=True)
+        if states["n_open"] > 0:
+            fig = ins.trail_stop_chart(states)
+            st.plotly_chart(fig, use_container_width=True,
+                             config={"displayModeBar": False}, key="ins_trail")
+        else:
+            st.caption("No open positions right now.")
+    except Exception as e:
+        st.error(f"trail-stop error: {e}")
 
 
 # ---------------- PERFORMANCE TAB ----------------
